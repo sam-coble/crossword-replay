@@ -1,0 +1,7 @@
+{
+	"name": "NYT Crossword Replay",
+	"version": "0.0",
+	"manifest_version": 3,
+	"description": "Create and view GIF replays of NYT crossword solves",
+	"author": "coblesam360@gmail.com"
+}
