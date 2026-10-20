@@ -1,7 +1,20 @@
 {
 	"name": "NYT Crossword Replay",
-	"version": "0.0",
+	"version": "0.1",
 	"manifest_version": 3,
-	"description": "Create and view GIF replays of NYT crossword solves",
-	"author": "coblesam360@gmail.com"
+	"description": "Record and replay timelapse animations of NYT crossword solves",
+	"author": "coblesam360@gmail.com",
+	"content_scripts": [
+		{
+			"matches": [
+				"https://www.nytimes.com/crosswords/game/daily/*",
+				"https://www.nytimes.com/crosswords/game/daily"
+			],
+			"js": [
+				"content.js"
+			],
+			"run_at": "document_idle"
+		}
+	],
+	"icons": {}
 }
