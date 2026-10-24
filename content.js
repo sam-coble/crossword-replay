@@ -6,12 +6,19 @@ const MAX_HISTORY_SIZE = 1000;
 const FRAME_DELAY_MS = 100; // 100ms per move = 10fps
 const VIDEO_KBPS = 5000; // Kibibit per second
 const HOLD_LAST_FRAME_COUNT = 10; // extra frames to hold final grid at end of WebM
+const PERSIST_INTERVAL_MS = 1000; // how often to flush new mutations to storage
+const PUZZLE_RECORD_PREFIX = 'nyt:daily:';
 
 // State
 let mutationTracker = [];
 let originalGridSvgString = null;
 
 let isMenuOpen = false;
+
+let recordMutationsToDisk = false;
+let hasUnsavedMutations = false;
+let recordKey = null;
+let compressedSvg = null; // cached so the svg isn't recompressed on every write
 
 /**
  * Observer function to trigger on all updates of xwd grid, find
@@ -33,6 +40,7 @@ const onGridUpdate = (mutationsList, observer) => {
 	const row = +targetMutation?.target?.parentElement?.parentElement?.ariaRowIndex;
 	const col = +targetMutation?.target?.parentElement?.parentElement?.ariaColIndex;
 	mutationTracker.push({ row, col, value: newCellValue });
+	hasUnsavedMutations = true;
 
 	if (mutationTracker.length >= MAX_HISTORY_SIZE) {
 		console.warn(EXTENSION_NAME, `[WARN] Exceeded max move count (${MAX_HISTORY_SIZE}). Stopping replay capture.`);
@@ -77,16 +85,22 @@ function getStyledSvg(svgString, styleSheets, cssSelectorPrefix) {
 
 /**
  * Helper to clean SVG by removing highlighting, aria attributes, and
- * other elements which break SVG rendering.
+ * other elements which break SVG rendering or are unneeded.
  */
 function cleanSvgForReplay(svgString) {
 	let ret = svgString
+		// Highlighting
 		.replace(/xwd__cell--selected/g, '')
 		.replace(/xwd__cell--highlighted/g, '')
-		.replace(/aria-selected="true"/g, 'aria-selected="false"')
-		// Remove <use xlink:href="..."> elements
+		// Broken links
 		.replace(/<use[^>]*xlink:href[^>]*><\/use>/g, '')
-		.replace(/<use[^>]*xlink:href[^>]*\/>/g, '');
+		.replace(/<use[^>]*xlink:href[^>]*\/>/g, '')
+		// Useless - remove for compression
+		.replace(/aria-selected="true"/g, 'aria-selected="false"')
+		.replace(/\s*aria-label="[^"]*"/g, '')
+		.replace(/<text class="xwd__cell--hidden">[^<]*<\/text>/g, '')
+		.replace(/\s*id="cell-id-\d+"/g, '')
+		.replace(/\s*data-testid="[^"]*"/g, '');
 
 	// Add xmlns attributes required in SVG
 	if (!ret.includes('xmlns="http://www.w3.org/2000/svg"')) {
@@ -148,11 +162,11 @@ function getNextSvg(prevSvgString, mutation) {
 	// Perform replacement with new cell value
 	const cellInner = prevSvgString.substring(gOpenEnd, gCloseStart);
 	const fontSize = getCellFontSize(cellInner, value);
-	// Letter element: <text text-anchor="middle" ...><text class="xwd__cell--hidden">OLD</text>OLD</text>
-	const letterTextPattern = /(<text[^>]*text-anchor="middle"[^>]*>)<text class="xwd__cell--hidden">[^<]*<\/text>[^<]*<\/text>/;
+	// Letter element: <text text-anchor="middle" ...>OLD</text>
+	const letterTextPattern = /(<text[^>]*text-anchor="middle"[^>]*>)[^<]*<\/text>/;
 	const updatedCellInner = cellInner.replace(letterTextPattern, (_match, textOpen) => {
-		const sizedTextOpen = textOpen.replace(/font-size="[^"]*"/, `font-size="${fontSize}"`);
-		return `${sizedTextOpen}<text class="xwd__cell--hidden">${value}</text>${value}</text>`;
+		const newTextOpen = textOpen.replace(/font-size="[^"]*"/, `font-size="${fontSize}"`);
+		return `${newTextOpen}${value}</text>`;
 	});
 	if (updatedCellInner === cellInner) {
 		console.debug(EXTENSION_NAME, METHOD_NAME, `[WARN] text element not found in cell row=${row}, col=${col}`);
@@ -497,6 +511,94 @@ function injectReplayButton() {
 	document.getElementById(BUTTON_ID)?.addEventListener('click', showReplayMenu);
 }
 
+/**
+ * Async helper to gzip a string and encode it as base64.
+ */
+async function getCompressedString(text) {
+	const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+	const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+	const binary = bytes.reduce((acc, cur) => acc + String.fromCharCode(cur), '');
+	return btoa(binary);
+}
+
+/**
+ * Async helper to decode a base64 string and decompress with gzip.
+ */
+async function decodeCompressedString(base64) {
+	const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+	const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+	return new Response(stream).text();
+}
+
+/**
+ * Writes the puzzle state (originalGridSvgString, mutationTracker) to disk
+ */
+async function writeRecordToDisk() {
+	// Convert from object to array for better compression
+	const mutationTuples = mutationTracker.map(({ row, col, value }) => [row, col, value]);
+	const mutations = await getCompressedString(JSON.stringify(mutationTuples));
+	await chrome.storage.local.set({
+		[recordKey]: {
+			svg: compressedSvg,
+			mutations,
+		}
+	});
+}
+
+/**
+ * Load puzzle record from storage if one exists. Otherwise writes a new
+ * record from the current state. Calls `onSuccessCallback` if storage is accessible.
+ */
+async function loadOrCreateRecord(onSuccessCallback) {
+	const METHOD_NAME = 'loadOrCreateRecord';
+	try {
+		recordKey = `${PUZZLE_RECORD_PREFIX}${getPuzzleDate()}`;
+		const record = (await chrome.storage.local.get(recordKey))[recordKey];
+		if (record) {
+			const storedSvg = await decodeCompressedString(record.svg);
+			const storedTuples = JSON.parse(await decodeCompressedString(record.mutations));
+			originalGridSvgString = storedSvg;
+			compressedSvg = record.svg;
+			// Keep any moves made while the record was loading
+			mutationTracker = storedTuples.map(([row, col, value]) => ({ row, col, value })).concat(mutationTracker);
+			console.debug(EXTENSION_NAME, METHOD_NAME, `[INFO] Loaded ${recordKey} with ${storedTuples.length} moves`);
+		} else {
+			compressedSvg = await getCompressedString(originalGridSvgString);
+			await writeRecordToDisk();
+			hasUnsavedMutations = false;
+			console.debug(EXTENSION_NAME, METHOD_NAME, `[INFO] Created ${recordKey}`);
+		}
+	} catch (e) {
+		console.error(EXTENSION_NAME, '[ERROR] could not access local storage', e);
+		return;
+	}
+	onSuccessCallback();
+}
+
+/**
+ * Start interval timer to periodically flush new grid mutations to storage 
+ * indefinetly until `recordMutationsToDisk` is false.
+ */
+function startFlushingMutationsToDisk(intervalMs) {
+	recordMutationsToDisk = true;
+	const flushMutationsToDisk = async () => {
+		if (!recordMutationsToDisk) return;
+		if (hasUnsavedMutations) {
+			// set immediantly and reset on failure to capture mutations made while writeRecordToDisk waits
+			hasUnsavedMutations = false;
+			try {
+				await writeRecordToDisk();
+			} catch (e) {
+				// Retry next attempt
+				hasUnsavedMutations = true;
+				console.debug(EXTENSION_NAME, METHOD_NAME, '[ERROR] failed to save mutations:', e);
+			}
+		}
+		setTimeout(flushMutationsToDisk, intervalMs);
+	};
+	setTimeout(flushMutationsToDisk, intervalMs);
+}
+
 let loadCheckAttempts = 0;
 const MAX_LOAD_CHECK_ATTEMPTS = 1000;
 /**
@@ -518,6 +620,10 @@ const onGridLoad = (_mutationsList, observer) => {
 			const styledSvg = getStyledSvg(rawSvg, document.styleSheets, '.xwd__');
 			originalGridSvgString = cleanSvgForReplay(styledSvg);
 		}
+
+		// Restore saved record for this puzzle, or save the new snapshot
+		// Start recording grid mutations to disk if disk is accessible.
+		loadOrCreateRecord(() => startFlushingMutationsToDisk(PERSIST_INTERVAL_MS) /* onSuccessCallback */);
 
 		// Inject the replay button
 		injectReplayButton();

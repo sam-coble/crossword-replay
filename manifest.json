@@ -4,6 +4,7 @@
 	"manifest_version": 3,
 	"description": "Record and replay timelapse animations of NYT crossword solves",
 	"author": "coblesam360@gmail.com",
+	"permissions": ["storage"],
 	"content_scripts": [
 		{
 			"matches": [
