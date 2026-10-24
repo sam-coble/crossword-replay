@@ -4,6 +4,8 @@ console.log(EXTENSION_NAME, 'Extension loaded!');
 // Configs
 const MAX_HISTORY_SIZE = 1000;
 const FRAME_DELAY_MS = 100; // 100ms per move = 10fps
+const VIDEO_KBPS = 5000; // Kibibit per second
+const HOLD_LAST_FRAME_COUNT = 10; // extra frames to hold final grid at end of WebM
 
 // State
 let mutationTracker = [];
@@ -205,49 +207,149 @@ async function loadSvgAsImage(svgString) {
 	}
 }
 
-/**
- * Starts a looping replay on given canvas by applying and animating grid
- * mutations one at a time. Returns callback to stop asynchronous playback.
- */
-async function createCanvasPlayer(canvas, frameDelay = FRAME_DELAY_MS) {
-	const METHOD_NAME = 'createCanvasPlayer';
-	if (!originalGridSvgString) {
-		console.debug(EXTENSION_NAME, METHOD_NAME, 'no frames found');
-		return () => {};
+function getSupportedMimeType() {
+	const METHOD_NAME = 'getSupportedMimeType';
+	for (const mimeType of ['video/webm; codecs=vp9', 'video/webm; codecs=vp8', 'video/webm']) {
+		if (MediaRecorder.isTypeSupported(mimeType)) {
+			console.debug(EXTENSION_NAME, METHOD_NAME, '[INFO] Using video codec', mimeType)
+			return mimeType;
+		}
 	}
+	console.debug(EXTENSION_NAME, METHOD_NAME, '[ERROR] No supported video codecs');
+}
 
-	const ctx = canvas.getContext('2d');
+/**
+ * Helper to size canvas to the grid's native SVG dimensions.
+ */
+function sizeCanvasToGrid(canvas) {
 	const {width, height} = getGridDimensions();
 	canvas.width = width;
 	canvas.height = height;
-	
-	let running = true;
-	let animationTimer = null;
-	async function startAnimation() {
-		while (running) {
-			for (const svgString of generateSvgFrames()) {
-				if (!running) return;
-				try {
-					const img = await loadSvgAsImage(svgString);
-					ctx.clearRect(0, 0, canvas.width, canvas.height);
-					ctx.fillStyle = '#ffffff';
-					ctx.fillRect(0, 0, canvas.width, canvas.height);
-					ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-				} catch (e) { /* skip failed frame */ }
-				await new Promise(r => { animationTimer = setTimeout(r, frameDelay); });
-			}
+}
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Draws one full playthrough of grid mutations onto canvas, one frame every
+ * frameDelay ms, awaiting onFrameDrawn() after each frame is drawn. Returns
+ * true if playthrough completed, or false if isStopped() became true first.
+ */
+async function playFramesOnce(canvas, frameDelay, isStopped, onFrameDrawn = async () => {}) {
+	const ctx = canvas.getContext('2d');
+	let frameNumber = 0;
+	for (const svgString of generateSvgFrames()) {
+		try {
+			const img = await loadSvgAsImage(svgString);
+			if (isStopped()) return false; // stopped during decode, don't draw
+			ctx.fillStyle = '#ffffff';
+			ctx.fillRect(0, 0, canvas.width, canvas.height);
+			ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+			await onFrameDrawn();
+		} catch (e) {
+			console.debug(EXTENSION_NAME, 'playFramesOnce', `[WARN] skipped frame ${frameNumber}:`, e);
 		}
+		await sleep(frameDelay);
+		if (isStopped()) return false;
+		frameNumber++;
 	}
+	return true;
+}
 
-	// Start playing (fire-and-forget async loop)
-	startAnimation();
+/**
+ * Encodes one full cycle of grid mutations to a WebM blob by replaying
+ * frames one at a time onto canvas and recording playback. 
+ * @param canvas Canvas element to draw frames to and record
+ * @param frameDelay Time delay in ms between drawing each frame
+ * @param isStopped Callback to call periodically to determine if to abort encoding (e.g. menu closed)
+ * @param onFinish Callback to call if encoding completes successfully (not stopped or failed)
+ */
+async function recordCanvasToWebm(canvas, frameDelay, isStopped, onFinish) {
+	const METHOD_NAME = 'recordCanvasToWebm';
+	console.debug(EXTENSION_NAME, METHOD_NAME, `recording ${getFrameCount()} frames from live canvas...`);
+	sizeCanvasToGrid(canvas);
 
-	return () => {
-		running = false;
-		if (animationTimer) {
-			clearTimeout(animationTimer)
+	try {
+		const stream = canvas.captureStream(0);
+		const track = stream.getVideoTracks()[0];
+		const recorder = new MediaRecorder(stream, {
+			mimeType: getSupportedMimeType(),
+			videoBitsPerSecond: VIDEO_KBPS * 1000,
+		});
+		const chunks = [];
+		recorder.ondataavailable = (e) => {
+			if (e.data && e.data.size > 0) chunks.push(e.data);
 		};
-	};
+		const recordingFinished = new Promise((resolve) => {
+			recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' }));
+		});
+		const captureFrame = async () => {
+			await new Promise(resolve => requestAnimationFrame(resolve)); // let canvas composite before capture
+			track.requestFrame();
+		};
+
+		// Replay frames on canvas
+		recorder.start(1000);
+		try {
+			await playFramesOnce(canvas, frameDelay, isStopped, captureFrame);
+			// Hold last frame
+			for (let i = 0; !isStopped() && i < HOLD_LAST_FRAME_COUNT; i++) {
+				await captureFrame();
+				await sleep(frameDelay);
+			}
+		} finally {
+			recorder.stop();
+		}
+		// Capture recording data
+		const blob = await new Promise(resolve => recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' })));
+
+		if (isStopped()) {
+			console.debug(EXTENSION_NAME, METHOD_NAME, '[INFO] Recording stopped early, discarding');
+			return;
+		}
+		console.debug(EXTENSION_NAME, METHOD_NAME, `[INFO] WebM recorded: ${(blob.size / 1024).toFixed(1)} KB`);
+		onFinish(blob);
+	} catch (e) {
+		console.error(EXTENSION_NAME, '[ERROR] WebM encoding failed:', e);
+		if (!isStopped()) onFinish(null);
+	}
+}
+
+/**
+ * Helper to trigger a browser download of a blob with the given filename.
+ */
+function downloadBlob(blob, filename) {
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement('a');
+	a.href = url;
+	a.download = filename;
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+	URL.revokeObjectURL(url);
+}
+
+/**
+ * Helper function to get puzzle date (YYYY-MM-DD) from the page title, e.g.
+ *   "Tuesday, October 20, 2026 The Crossword puzzle — The New York Times" => "2026-10-20"
+ */
+function getPuzzleDate() {
+	const date = new Date(document.title.split('The')[0]);
+	return (date ?? Date.now()).toISOString().split('T')[0];
+}
+
+/**
+ * Starts a looping replay on given canvas by applying and animating grid
+ * mutations one at a time. Loops indefinetly until stopped.
+ */
+async function createCanvasPlayer(canvas, frameDelay, isStopped) {
+	const METHOD_NAME = 'createCanvasPlayer';
+	if (!originalGridSvgString) {
+		console.debug(EXTENSION_NAME, METHOD_NAME, '[ERROR] no frames found');
+		return;
+	}
+	sizeCanvasToGrid(canvas);
+	// Cycle replay until menu is closed
+	while (await playFramesOnce(canvas, frameDelay, isStopped));
 }
 
 /**
@@ -255,7 +357,7 @@ async function createCanvasPlayer(canvas, frameDelay = FRAME_DELAY_MS) {
  * timelapse on a canvas in real-time, and prepares the WebM download in the
  * background. No-op if the modal is already open.
  */
-async function showReplayMenu() {
+function showReplayMenu() {
 	const METHOD_NAME = 'showReplayMenu';
 	if (isMenuOpen) return;
 	isMenuOpen = true;
@@ -265,8 +367,6 @@ async function showReplayMenu() {
 	if (button) {
 		button.disabled = true;
 	}
-
-	let stopCanvasPlaybackCallback = null;
 
 	try {
 		const totalFrames = getFrameCount();
@@ -311,11 +411,7 @@ async function showReplayMenu() {
 		`;
 		document.body.appendChild(menuDiv);
 
-		// Wire close button and overlay click
 		const closeMenuCallback = () => {
-			if (stopCanvasPlaybackCallback) {
-				stopCanvasPlaybackCallback();
-			}
 			isMenuOpen = false;
 			menuDiv.remove();
 			if (button) {
@@ -326,8 +422,35 @@ async function showReplayMenu() {
 		menuDiv.querySelector('#xwd-replay-overlay')?.addEventListener('click', closeMenuCallback);
 
 		const replayCanvas = menuDiv.querySelector('#xwd-replay-canvas');
-		stopCanvasPlaybackCallback = await createCanvasPlayer(replayCanvas);
-		console.debug(EXTENSION_NAME, METHOD_NAME, '[INFO] Canvas player started');
+		const downloadBtn = menuDiv.querySelector('#xwd-replay-download');
+		
+		// Playback/encoding for this menu stops once it's removed from the page
+		const isStopped = () => !menuDiv.isConnected;
+
+		// Once encoding finishes, loop the replay and enable download
+		const onEncodingFinished = (videoBlob) => {
+			console.debug(EXTENSION_NAME, METHOD_NAME, '[INFO] Canvas player started');
+			createCanvasPlayer(replayCanvas, FRAME_DELAY_MS, isStopped);
+
+			if (!videoBlob || videoBlob.size <= 200) { // <= 200 bytes means header only, missing frame data
+				console.error(EXTENSION_NAME, METHOD_NAME, '[ERROR] WebM blob missing or too small:', videoBlob?.size);
+				downloadBtn.textContent = 'Encoding failed';
+				return;
+			}
+			const blobSizeKB = (videoBlob.size / 1024).toFixed(1);
+			downloadBtn.textContent = `Download WebM (${blobSizeKB} KB)`;
+			downloadBtn.disabled = false;
+			downloadBtn.style.removeProperty('opacity');
+			downloadBtn.style.removeProperty('pointer-events');
+			downloadBtn.addEventListener('click', () => {
+				const puzzleDate = getPuzzleDate();
+				downloadBlob(videoBlob, `nyt-crossword-replay-${puzzleDate}.webm`);
+			});
+			console.debug(EXTENSION_NAME, METHOD_NAME, '[INFO] WebM ready for download');
+		};
+
+		// Encode WebM in the background by recording the canvas (first visible playthrough)
+		recordCanvasToWebm(replayCanvas, FRAME_DELAY_MS, isStopped, onEncodingFinished);
 	} catch (e) {
 		console.error(EXTENSION_NAME, 'Replay failed:', e);
 		isMenuOpen = false;
