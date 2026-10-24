@@ -109,6 +109,19 @@ function cleanSvgForReplay(svgString) {
 }
 
 /**
+ * Helper to compute cell font-size, needed for rebus cells.
+ * | # letters |   1   |   2   |   3   |   4   |   5   |
+ * | font-size | 23.33 | 23.33 | 15.55 | 11.66 | 9.332 |
+ * 
+ * font-size ~= (cellWidth * 2/3) / max(2, N)
+ */
+function getCellFontSize(cellInner, value) {
+	const cellWidth = parseFloat(cellInner.match(/<rect[^>]*\bwidth="([\d.]+)"/)?.[1] ?? 33);
+	const baseFontSize = Math.round(cellWidth * 2 / 3 * 100) / 100;
+	return baseFontSize * Math.min(1, 2 / value.length);
+}
+
+/**
  * Helper to apply a single cell mutation to an SVG string. Locates the cell's
  * letter content by aria-rowindex/aria-colindex and replaces old value with new.
  */
@@ -134,10 +147,13 @@ function getNextSvg(prevSvgString, mutation) {
 
 	// Perform replacement with new cell value
 	const cellInner = prevSvgString.substring(gOpenEnd, gCloseStart);
-	const updatedCellInner = cellInner.replace(
-		/(<text[^>]*text-anchor="middle"[^>]*>)\s*(<text[^>]*class="xwd__cell--hidden"[^>]*>)[^<]*(<\/text>)[^<]*(<\/text>)/,
-		`$1$2${value}$3${value}$4`
-	);
+	const fontSize = getCellFontSize(cellInner, value);
+	// Letter element: <text text-anchor="middle" ...><text class="xwd__cell--hidden">OLD</text>OLD</text>
+	const letterTextPattern = /(<text[^>]*text-anchor="middle"[^>]*>)<text class="xwd__cell--hidden">[^<]*<\/text>[^<]*<\/text>/;
+	const updatedCellInner = cellInner.replace(letterTextPattern, (_match, textOpen) => {
+		const sizedTextOpen = textOpen.replace(/font-size="[^"]*"/, `font-size="${fontSize}"`);
+		return `${sizedTextOpen}<text class="xwd__cell--hidden">${value}</text>${value}</text>`;
+	});
 	if (updatedCellInner === cellInner) {
 		console.debug(EXTENSION_NAME, METHOD_NAME, `[WARN] text element not found in cell row=${row}, col=${col}`);
 	}
