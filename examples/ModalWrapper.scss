@@ -1,0 +1,438 @@
+/* stylelint-disable custom/playbook-spacing-rules */
+
+@import 'shared/scss-helpers/index.scss';
+
+.xwd__modal--wrapper {
+  @include stretch;
+  @include flexbox(row, flex-end);
+
+  position: absolute;
+}
+
+.xwd__modal--overlay {
+  @include stretch;
+  position: absolute;
+  background-color: var(--bg-scrim);
+  opacity: 0.86;
+  z-index: 101;
+}
+
+.pz-mobile {
+  .xwd__modal--overlay {
+    position: fixed;
+  }
+
+  .xwd__modal--overlay.showHeader {
+    // make toolbar z-index larger than modal for start
+    z-index: 99;
+  }
+}
+
+// Refcounted on `body` from ModalWrapper when a mobile modal uses `showHeader`. Avoids
+// `position: fixed` on `body` so pull-to-refresh still works; pins game header on hybrid
+// surfaces so it does not rubber-band separately from the fixed modal stack.
+body.pz-modal-show-header-active.pz-mobile {
+  touch-action: pan-y;
+}
+
+body.pz-modal-show-header-active.pz-mobile.pz-web:not(.pz-hybrid) {
+  overscroll-behavior-y: contain;
+}
+
+body.pz-modal-show-header-active.pz-mobile.pz-hybrid
+  .pz-header.pz-game-header,
+body.pz-modal-show-header-active.pz-mobile.pz-games-app
+  .pz-header.pz-game-header,
+body.pz-modal-show-header-active.pz-mobile.pz-newsreader
+  .pz-header.pz-game-header {
+  position: fixed;
+  top: env(safe-area-inset-top, 0px);
+  left: 0;
+  right: 0;
+  width: 100%;
+  z-index: $z-index-nav + 1;
+}
+
+.xwd__modal--body {
+  display: flex;
+  background-color: var(--bg-modal);
+  border-radius: 4px;
+  box-shadow: 0 3px 12px -1px rgba(0, 0, 0, 0.3);
+  overflow-y: auto;
+  box-sizing: border-box;
+  outline: none;
+  padding: 24px;
+  pointer-events: visible;
+  position: relative;
+  min-height: 50%;
+  max-height: calc(100% - 32px);
+  width: 100%;
+  z-index: 102; // so that the ModalBody is above the ModalWrapper
+
+  input:disabled span {
+    color: $gray3;
+    font-weight: 200;
+  }
+}
+
+.xwd__modal--close {
+  display: block;
+  cursor: pointer;
+  position: absolute;
+  right: 0;
+  top: 0;
+  padding: 1.2rem;
+  // Reset the native <button> chrome so it renders like the original div.
+  appearance: none;
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: inherit;
+  font: inherit;
+  font-weight: 700;
+
+  .pz-icon {
+    margin-right: 0;
+    vertical-align: -0.125rem; // 2px
+    background-size: unset;
+    margin-left: 0.4rem;
+  }
+
+  &:hover {
+    text-decoration: underline;
+    color: $newsGray85;
+
+    .pz-icon {
+      // poor man's way of gettig it to grey on hover
+      opacity: 0.85;
+    }
+  }
+}
+
+.conn__modal,
+.strands__modal .xwd__modal--close {
+  color: var(--text);
+  text-align: right;
+  font-family: $franklin;
+  font-size: 16px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.16px;
+}
+
+.xwd__modal--title {
+  font: bold 17px $franklin;
+  margin-bottom: 15px;
+  padding-bottom: 15px;
+  text-align: center;
+}
+
+.xwd__modal--content {
+  @include flexbox(column, center, center);
+  @include font-size(16);
+
+  font-family: $franklin;
+  width: 100%;
+
+  p {
+    @include font-size(16);
+  }
+}
+
+.pz-moment__description.small {
+  margin-top: 8px;
+  text-align: center;
+}
+
+@include tablet-and-desktop {
+  .xwd__modal--wrapper {
+    align-items: center;
+    z-index: 99;
+  }
+
+  .xwd__modal--body {
+    width: 540px;
+    height: 540px;
+  }
+
+  .pz-moment__description.small {
+    margin-top: 12px;
+  }
+}
+
+// CYWP end modal
+.pz-hybrid {
+  .xwd__modal--wrapper:has(.create-wordle-end-body) {
+    z-index: 100;
+  }
+}
+
+@include desktop {
+  .xwd__modal--body {
+    width: 667px;
+    height: calc(100% - 44px);
+  }
+}
+
+.modal-system-container {
+  position: initial;
+  z-index: 99;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  right: 0;
+}
+
+.animate-opening {
+  animation: SlideIn var(--modal-animation-duration, 200ms);
+}
+
+// this animation opens modal to center of Y
+.animate-opening-slide-up {
+  animation: SlideUp var(--modal-animation-duration, 200ms);
+}
+
+.xwd__modal--body.closing {
+  animation: SlideOut var(--modal-animation-duration, 200ms);
+}
+
+@media screen and (max-width: 499px) {
+  .xwd__modal--body {
+    border-radius: 4px 4px 0 0;
+  }
+
+  // show the modal scrim over the toolbar in mobile
+  .modal-system-container {
+    position: fixed;
+  }
+
+  // as long as the container does NOT have .pause-modal ex. Pause Modal, place it above everything including the nav menu
+  .modal-system-container:not(.pause-modal) {
+    z-index: 100;
+  }
+}
+
+@media screen and (min-width: 1280px) {
+  .xwd__modal--games-carousel-override {
+    overflow-x: visible; /* Adjust width for larger viewports to account for Games Carousel */
+    width: max-content;
+    min-width: 667px;
+  }
+}
+
+// animations taken from Wordle
+
+@keyframes SlideIn {
+  0% {
+    transform: translateY(30px);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0px);
+    opacity: 1;
+  }
+}
+
+@keyframes SlideUp {
+  0% {
+    opacity: 0;
+    top: 100%;
+  }
+  100% {
+    opacity: 1;
+    top: 50%;
+  }
+}
+
+@keyframes SlideOut {
+  0% {
+    transform: translateY(0px);
+    opacity: 1;
+  }
+  90% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(60px);
+  }
+}
+
+// Connections Feature Awareness Message
+.xwd__modal--wrapper:has(.feature-awareness) {
+  align-items: center;
+}
+
+// Connections Fullscreen Congrats
+@include tablet {
+  .xwd__modal--wrapper:has(.fullscreen-congrats) {
+    z-index: 100;
+  }
+}
+
+@include tablet-and-desktop {
+  .xwd__modal--body.modal-rules-body.conn__modal.fullscreen-congrats,
+  .xwd__modal--body.modal-rules-body.strands__modal.fullscreen-congrats {
+    width: 100%;
+  }
+
+  .xwd__modal--wrapper:has(.fullscreen-congrats) {
+    position: fixed;
+  }
+}
+
+.xwd__modal--content {
+  .modalContent {
+    margin-top: 0;
+  }
+}
+
+@include desktop {
+  .fullscreen-congrats {
+    max-height: 100%;
+    flex-direction: column;
+
+    .xwd__modal--close {
+      padding: 0;
+      display: flex;
+      width: 600px;
+      align-items: flex-end;
+      justify-content: flex-end;
+      align-self: center;
+      position: relative;
+      margin-top: 100px;
+    }
+  }
+}
+
+.modal-stats-body {
+  //use in: connections
+  @extend .modal-rules-body;
+  background-color: var(--bg-modal);
+}
+
+.dark-mode-overlay.xwd__modal--overlay {
+  background-color: var(--bg-scrim);
+  opacity: 0.85;
+}
+
+// hints modal for strands
+@keyframes SlideInHint {
+  0% {
+    opacity: 0;
+    top: 100%;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 1;
+    top: 50%;
+    transform: translate(-50%, -50%);
+  }
+}
+
+.strands-hint-modal {
+  max-height: unset;
+  min-height: unset;
+  background: var(--bg-modal);
+  color: var(--text);
+}
+
+.dark-mode-body {
+  max-height: unset;
+  min-height: unset;
+  background: var(--bg-modal);
+  color: var(--text);
+  .xwd__modal--close {
+    z-index: 2;
+  }
+  svg.pz-settings-icon {
+    position: relative;
+    bottom: 2px;
+    width: 14px;
+    height: 14px;
+    path {
+      fill: var(--text);
+    }
+  }
+  // settings icon in button is different size and relative margin to text
+  .button-primary svg.pz-settings-icon {
+    margin-left: 8px;
+    bottom: 0px;
+    width: 11px;
+    height: 11px;
+    // primary button has alternate background color,
+    // so need to make icon color alternate as well
+    path {
+      fill: var(--text-alternate);
+    }
+  }
+  button:not(.fam-close-x) {
+    background-color: var(--bg-btn-emphasis);
+    color: var(--text-alternate);
+    text-transform: none;
+    width: fit-content;
+    min-width: 170px;
+    margin: var(--Spacing-2, 16px) 0px;
+    font-size: 14px;
+    text-align: center;
+    height: var(--Spacing-4, 32px);
+    padding: 0px var(--Spacing-1_5, 12px);
+    gap: var(--Spacing-1, 8px);
+    border: 1px solid var(--stroke);
+    border-radius: 9999px;
+  }
+}
+
+@include tablet-and-desktop {
+  .xwd__modal--body.strands-hint-modal {
+    width: 520px;
+    height: 233px;
+    padding: 40px;
+  }
+  .xwd__modal--body.strands-congrats-modal {
+    box-shadow: unset;
+  }
+}
+
+@media screen and (max-width: 499px) {
+  .strands-hint-modal {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    -webkit-transform: translate(-50%, -50%);
+    transform: translate(-50%, -50%);
+    width: 85%;
+    padding: 40px 24px;
+  }
+  .strands-hint-modal.animate-opening {
+    animation: SlideInHint var(--modal-animation-duration, 120ms);
+  }
+
+  .dark-mode-body {
+    width: 288px;
+    transform: translateY(-50%);
+    top: 50%;
+    position: absolute;
+    padding: 0;
+    border-radius: 4px; //<overwriting for fam or floating modals only, using this in other dark mode modal will show hole in the bottom
+  }
+}
+
+@media screen and (min-width: 500px) {
+  .dark-mode-body {
+    padding-top: 0;
+    width: 408px;
+    height: 650px;
+  }
+}
+
+.create-wordle-end-body {
+  width: 100%;
+  height: 100%;
+  max-height: unset;
+  box-shadow: none;
+
+  .xwd__modal--close {
+    font-size: 14px;
+  }
+}

@@ -1,0 +1,62 @@
+.xwd__printtools--button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  background-color: white; // add background color to buttons instead of parent so that the background respects border radius
+  width: 100%;
+  max-width: $print-button-max-width;
+  color: $black;
+  border: 1px solid $black;
+  border-radius: 3px;
+  outline: none;
+  padding: calc(var(--horizontal-spacing-0-5) * 2.5) 0;
+  margin-bottom: calc(var(--vertical-spacing-0-5) * 3.75);
+  text-align: center;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+
+  .xwd__printtools--text {
+    margin-left: calc(var(--horizontal-spacing-0-5) * 3.75);
+  }
+
+  &:hover:not(:disabled) {
+    background-color: $gray6;
+    color: black;
+    cursor: pointer;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+}
+
+@include phone-and-tablet {
+  .xwd__printtools--button {
+    @include flexbox();
+
+    width: 100%;
+    height: 42px;
+    margin-bottom: 0;
+
+    .xwd__printtools--text {
+      margin-left: calc(var(--horizontal-spacing-0-5) * 2.5);
+    }
+  }
+}
+
+@include phone {
+  .xwd__printtools--button {
+    max-width: unset;
+    width: calc(100% - 20px);
+  }
+}
+
+@include tiny-phone {
+  .xwd__printtools--text {
+    display: none;
+  }
+}
