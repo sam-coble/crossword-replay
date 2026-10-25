@@ -3,12 +3,16 @@ console.log(EXTENSION_NAME, 'Extension loaded!');
 
 // Configs
 const MAX_HISTORY_SIZE = 1000;
+
 const FRAME_DELAY_MS = 100; // 100ms per move = 10fps
 const VIDEO_KBPS = 5000; // Kibibit per second
 const HOLD_LAST_FRAME_COUNT = 10; // extra frames to hold final grid at end of WebM
+
 const PERSIST_INTERVAL_MS = 1000; // how often to flush new mutations to storage
 const PUZZLE_RECORD_PREFIX = 'nyt:daily:';
 const STORAGE_BUDGET_BYTES = 5 * 1024 * 1024; // purge oldest records above this (chrome.storage.local limit is 10 MB)
+
+const MENU_ANIMATION_MS = 200;
 
 // State
 let mutationTracker = []; // one entry per replay frame: [[{ row, col, value }, ...], ...]
@@ -456,15 +460,15 @@ function showReplayMenu() {
 			<div role="dialog" aria-modal="true" class="modal-system-container" data-testid="modal-wrapper" aria-label="Solve Replay">
 				<div class="xwd__modal--wrapper">
 					<div class="xwd__modal--overlay" id="xwd-replay-overlay"></div>
-					<div class="xwd__modal--body xwd__print-modal--body" tabindex="0" data-testid="modal-body" style="--modal-animation-duration: 200ms;">
+					<div class="xwd__modal--body xwd__print-modal--body animate-opening" tabindex="0" data-testid="modal-body" style="--modal-animation-duration: ${MENU_ANIMATION_MS}ms;">
 						<button type="button" aria-label="close" class="xwd__modal--close" id="xwd-replay-close">
 							<i class="pz-icon pz-icon-close"></i>
 						</button>
-						<article class="xwd__modal--content">
+						<article class="xwd__modal--content" style="justify-content: safe center;">
 							<h1 class="pz-moment__title medium karnak">Solve Replay</h1>
-							<div style="display: flex; justify-content: center; margin: 16px 0;">
+							<div style="display: flex; justify-content: center; align-items: center; flex: 1 1 auto; min-height: 120px; margin: 16px 0;">
 								<canvas id="xwd-replay-canvas"
-									style="max-width: 100%; max-height: 400px; border: 1px solid #ccc; border-radius: 4px;">
+									style="max-width: 100%; max-height: 100%; border: 1px solid #ccc; border-radius: 4px;">
 								</canvas>
 							</div>
 							<p style="text-align: center; color: #666; font-size: 14px; margin: 8px 0;">
@@ -472,7 +476,7 @@ function showReplayMenu() {
 							</p>
 							<div class="xwd__modal--button-container">
 								<button type="button" id="xwd-replay-download" class="pz-moment__button primary default" disabled
-									style="opacity: 0.5; pointer-events: none;">
+									style="opacity: 0.5; pointer-events: none; width: auto; max-width: none; padding-inline: 24px; white-space: nowrap;">
 									Encoding WebM...
 								</button>
 							</div>
@@ -481,9 +485,20 @@ function showReplayMenu() {
 				</div>
 			</div>
 		`;
-		document.body.appendChild(menuDiv);
+		const modalContainer = document.getElementById('portal-game-modals') ?? document.body;
+		modalContainer.appendChild(menuDiv);
 
-		const closeMenuCallback = () => {
+		const modalBody = menuDiv.querySelector('.xwd__modal--body');
+		let isClosing = false;
+		const closeMenuCallback = async () => {
+			if (isClosing) return; // ignore extra clicks during the close animation
+			isClosing = true;
+			document.removeEventListener('keydown', closeOnEscape);
+			modalBody.classList.add('closing');
+			await Promise.race([
+				new Promise(resolve => modalBody.addEventListener('animationend', resolve, { once: true })),
+				sleep(MENU_ANIMATION_MS + 100), // fallback in case the animation doesn't run
+			]);
 			isMenuOpen = false;
 			menuDiv.remove();
 			if (button) {
@@ -492,11 +507,15 @@ function showReplayMenu() {
 		};
 		menuDiv.querySelector('#xwd-replay-close')?.addEventListener('click', closeMenuCallback);
 		menuDiv.querySelector('#xwd-replay-overlay')?.addEventListener('click', closeMenuCallback);
+		const closeOnEscape = (event) => {
+			if (event.key === 'Escape') closeMenuCallback();
+		};
+		document.addEventListener('keydown', closeOnEscape);
 
 		const replayCanvas = menuDiv.querySelector('#xwd-replay-canvas');
 		const downloadBtn = menuDiv.querySelector('#xwd-replay-download');
 		
-		// Playback/encoding for this menu stops once it's removed from the page
+		// Abort playback/encoding after menu close
 		const isStopped = () => !menuDiv.isConnected;
 
 		// Once encoding finishes, loop the replay and enable download
@@ -505,7 +524,7 @@ function showReplayMenu() {
 			createCanvasPlayer(replayCanvas, FRAME_DELAY_MS, isStopped);
 
 			if (!videoBlob || videoBlob.size <= 200) { // <= 200 bytes means header only, missing frame data
-				console.error(EXTENSION_NAME, METHOD_NAME, '[ERROR] WebM blob missing or too small:', videoBlob?.size);
+				console.debug(EXTENSION_NAME, METHOD_NAME, '[ERROR] WebM blob missing or too small:', videoBlob?.size);
 				downloadBtn.textContent = 'Encoding failed';
 				return;
 			}
@@ -544,11 +563,25 @@ function injectReplayButton() {
 
 	const buttonHTML = `
 		<button type="button" id="xwd-replay-button" class="xwd__printtools--button">
-			<i class="pz-icon pz-icon-print-black" aria-hidden="true"></i>
+			<img src="${chrome.runtime.getURL('icon64.png')}" alt="" aria-hidden="true" width="20" height="20">
 			<span class="xwd__printtools--text">Replay</span>
 		</button>
 	`;
 	toolsContainer.insertAdjacentHTML('beforeend', buttonHTML);
+	// Lay out Print and Replay side by side. NYT's button styles stack tools vertically:
+	// each button is width: 100% with margin-bottom on all but the last child, so once
+	// Replay is appended Print gets a bottom margin that would push it out of line.
+	document.head.insertAdjacentHTML('beforeend', `
+		<style id="xwd-replay-styles">
+			.xwd__header--tools-container:has(#xwd-replay-button) {
+				display: flex;
+				gap: calc(var(--horizontal-spacing-0-5, 4px) * 3.75);
+			}
+			.xwd__header--tools-container:has(#xwd-replay-button) .xwd__printtools--button {
+				margin-bottom: 0;
+			}
+		</style>
+	`);
 
 	document.getElementById(BUTTON_ID)?.addEventListener('click', showReplayMenu);
 }

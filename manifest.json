@@ -15,6 +15,12 @@
 			"js": ["content.js"]
 		}
 	],
+	"web_accessible_resources": [
+		{
+			"resources": ["icon64.png"],
+			"matches": ["https://www.nytimes.com/*"]
+		}
+	],
 	"icons": {
 		"64": "icon64.png"
 	}
