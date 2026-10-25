@@ -4,9 +4,12 @@ console.log(EXTENSION_NAME, 'Extension loaded!');
 // Configs
 const MAX_HISTORY_SIZE = 1000;
 
-const FRAME_DELAY_MS = 100; // 100ms per move = 10fps
+const SLIDER_DEFAULT_FPS = 10;
+const SLIDER_MIN_FPS = 1;
+const SLIDER_MAX_FPS = 30;
+
 const VIDEO_KBPS = 5000; // Kibibit per second
-const HOLD_LAST_FRAME_COUNT = 10; // extra frames to hold final grid at end of WebM
+const HOLD_LAST_FRAME_MS = 1000; // how long to hold the final grid at end of WebM
 
 const PERSIST_INTERVAL_MS = 1000; // how often to flush new mutations to storage
 const PUZZLE_RECORD_PREFIX = 'nyt:daily:';
@@ -307,13 +310,14 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * Draws one full playthrough of grid mutations onto canvas, one frame every
- * frameDelay ms, awaiting onFrameDrawn() after each frame is drawn. Returns
+ * getFrameDelay() ms, awaiting onFrameDrawn() after each frame is drawn. Returns
  * true if playthrough completed, or false if isStopped() became true first.
  */
-async function playFramesOnce(canvas, frameDelay, isStopped, onFrameDrawn = async () => {}) {
+async function playFramesOnce(canvas, getFrameDelay, isStopped, onFrameDrawn = async () => {}) {
 	const ctx = canvas.getContext('2d');
 	let frameNumber = 0;
 	for (const svgString of generateSvgFrames()) {
+		const frameStart = performance.now();
 		try {
 			const img = await loadSvgAsImage(svgString);
 			if (isStopped()) return false; // stopped during decode, don't draw
@@ -324,7 +328,7 @@ async function playFramesOnce(canvas, frameDelay, isStopped, onFrameDrawn = asyn
 		} catch (e) {
 			console.debug(EXTENSION_NAME, 'playFramesOnce', `[WARN] skipped frame ${frameNumber}:`, e);
 		}
-		await sleep(frameDelay);
+		await sleep(Math.max(0, getFrameDelay() - (performance.now() - frameStart)));
 		if (isStopped()) return false;
 		frameNumber++;
 	}
@@ -355,9 +359,6 @@ async function recordCanvasToWebm(canvas, frameDelay, isStopped, onFinish) {
 		recorder.ondataavailable = (e) => {
 			if (e.data && e.data.size > 0) chunks.push(e.data);
 		};
-		const recordingFinished = new Promise((resolve) => {
-			recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' }));
-		});
 		const captureFrame = async () => {
 			await new Promise(resolve => requestAnimationFrame(resolve)); // let canvas composite before capture
 			track.requestFrame();
@@ -366,9 +367,10 @@ async function recordCanvasToWebm(canvas, frameDelay, isStopped, onFinish) {
 		// Replay frames on canvas
 		recorder.start(1000);
 		try {
-			await playFramesOnce(canvas, frameDelay, isStopped, captureFrame);
+			await playFramesOnce(canvas, () => frameDelay, isStopped, captureFrame);
 			// Hold last frame
-			for (let i = 0; !isStopped() && i < HOLD_LAST_FRAME_COUNT; i++) {
+			const holdEnd = performance.now() + HOLD_LAST_FRAME_MS;
+			while (!isStopped() && performance.now() < holdEnd) {
 				await captureFrame();
 				await sleep(frameDelay);
 			}
@@ -417,7 +419,7 @@ function getPuzzleDate() {
  * Starts a looping replay on given canvas by applying and animating grid
  * mutations one at a time. Loops indefinetly until stopped.
  */
-async function createCanvasPlayer(canvas, frameDelay, isStopped) {
+async function createCanvasPlayer(canvas, getFrameDelay, isStopped) {
 	const METHOD_NAME = 'createCanvasPlayer';
 	if (!originalGridSvgString) {
 		console.debug(EXTENSION_NAME, METHOD_NAME, '[ERROR] no frames found');
@@ -425,7 +427,7 @@ async function createCanvasPlayer(canvas, frameDelay, isStopped) {
 	}
 	sizeCanvasToGrid(canvas);
 	// Cycle replay until menu is closed
-	while (await playFramesOnce(canvas, frameDelay, isStopped));
+	while (await playFramesOnce(canvas, getFrameDelay, isStopped));
 }
 
 /**
@@ -470,10 +472,27 @@ function showReplayMenu() {
 								<canvas id="xwd-replay-canvas"
 									style="max-width: 100%; max-height: 100%; border: 1px solid #ccc; border-radius: 4px;">
 								</canvas>
+								<canvas id="xwd-replay-encoder" aria-hidden="true"
+									style="position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;">
+								</canvas>
 							</div>
 							<p style="text-align: center; color: #666; font-size: 14px; margin: 8px 0;">
 								${mutationTracker.length} moves recorded
 							</p>
+							<div style="width: 100%; max-width: 360px; margin: 8px 0 28px; font-size: 14px;">
+								<label for="xwd-replay-fps" style="display: block; text-align: center; font-weight: 700; margin-bottom: 6px;">Playback Speed</label>
+								<div style="display: flex; align-items: center; gap: 10px;">
+									<span aria-hidden="true">${SLIDER_MIN_FPS} fps</span>
+									<div style="position: relative; flex: 1;">
+										<input type="range" id="xwd-replay-fps" min="${SLIDER_MIN_FPS}" max="${SLIDER_MAX_FPS}" step="1" value="${SLIDER_DEFAULT_FPS}"
+											aria-valuetext="${SLIDER_DEFAULT_FPS} fps" style="display: block; width: 100%; margin: 0; accent-color: #000; cursor: pointer;">
+										<output id="xwd-replay-fps-value" for="xwd-replay-fps" style="position: absolute; top: calc(100% + 4px); transform: translateX(-50%); white-space: nowrap;">
+											${SLIDER_DEFAULT_FPS} fps
+										</output>
+									</div>
+									<span aria-hidden="true">${SLIDER_MAX_FPS} fps</span>
+								</div>
+							</div>
 							<div class="xwd__modal--button-container">
 								<button type="button" id="xwd-replay-download" class="pz-moment__button primary default" disabled
 									style="opacity: 0.5; pointer-events: none; width: auto; max-width: none; padding-inline: 24px; white-space: nowrap;">
@@ -515,14 +534,24 @@ function showReplayMenu() {
 		const replayCanvas = menuDiv.querySelector('#xwd-replay-canvas');
 		const downloadBtn = menuDiv.querySelector('#xwd-replay-download');
 		
+		const fpsSlider = menuDiv.querySelector('#xwd-replay-fps');
+		const fpsValue = menuDiv.querySelector('#xwd-replay-fps-value');
+		const encoderCanvas = menuDiv.querySelector('#xwd-replay-encoder');
 		// Abort playback/encoding after menu close
 		const isStopped = () => !menuDiv.isConnected;
 
-		// Once encoding finishes, loop the replay and enable download
-		const onEncodingFinished = (videoBlob) => {
-			console.debug(EXTENSION_NAME, METHOD_NAME, '[INFO] Canvas player started');
-			createCanvasPlayer(replayCanvas, FRAME_DELAY_MS, isStopped);
+		// Preview plays continuously at the slider's live value
+		const updateFpsLabel = () => {
+			const fraction = (fpsSlider.value - fpsSlider.min) / (fpsSlider.max - fpsSlider.min);
+			fpsValue.textContent = fpsSlider.ariaValueText = `${fpsSlider.value} fps`;
+			fpsValue.style.left = `calc(${fraction * 100}% + ${8 - fraction * 16}px)`;
+		};
+		updateFpsLabel();
+		fpsSlider.addEventListener('input', updateFpsLabel);
+		createCanvasPlayer(replayCanvas, () => 1000 / Number(fpsSlider.value), isStopped);
 
+		// Encode once at SLIDER_MAX_FPS on the hidden canvas; downloads are retimed to the slider's value
+		const onEncodingFinished = (videoBlob) => {
 			if (!videoBlob || videoBlob.size <= 200) { // <= 200 bytes means header only, missing frame data
 				console.debug(EXTENSION_NAME, METHOD_NAME, '[ERROR] WebM blob missing or too small:', videoBlob?.size);
 				downloadBtn.textContent = 'Encoding failed';
@@ -533,15 +562,14 @@ function showReplayMenu() {
 			downloadBtn.disabled = false;
 			downloadBtn.style.removeProperty('opacity');
 			downloadBtn.style.removeProperty('pointer-events');
-			downloadBtn.addEventListener('click', () => {
+			downloadBtn.addEventListener('click', async () => {
 				const puzzleDate = getPuzzleDate();
-				downloadBlob(videoBlob, `nyt-crossword-replay-${puzzleDate}.webm`);
+				const rescaledVideoBlob = await rescaleWebmTimecodes(videoBlob, SLIDER_MAX_FPS / Number(fpsSlider.value));
+				downloadBlob(rescaledVideoBlob, `nyt-crossword-replay-${puzzleDate}.webm`);
 			});
 			console.debug(EXTENSION_NAME, METHOD_NAME, '[INFO] WebM ready for download');
 		};
-
-		// Encode WebM in the background by recording the canvas (first visible playthrough)
-		recordCanvasToWebm(replayCanvas, FRAME_DELAY_MS, isStopped, onEncodingFinished);
+		recordCanvasToWebm(encoderCanvas, 1000 / SLIDER_MAX_FPS, isStopped, onEncodingFinished);
 	} catch (e) {
 		console.error(EXTENSION_NAME, 'Replay failed:', e);
 		isMenuOpen = false;
