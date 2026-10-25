@@ -427,7 +427,10 @@ async function createCanvasPlayer(canvas, getFrameDelay, isStopped) {
 	}
 	sizeCanvasToGrid(canvas);
 	// Cycle replay until menu is closed
-	while (await playFramesOnce(canvas, getFrameDelay, isStopped));
+	while (await playFramesOnce(canvas, getFrameDelay, isStopped) && !isStopped()) {
+		// Pause on final frame
+		await sleep(HOLD_LAST_FRAME_MS);
+	}
 }
 
 /**
