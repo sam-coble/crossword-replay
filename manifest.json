@@ -12,16 +12,19 @@
 				"https://www.nytimes.com/crosswords/game/daily"
 			],
 			"run_at": "document_idle",
-			"js": ["content.js"]
+			"js": ["webm_helpers.js", "content.js"]
 		}
 	],
 	"web_accessible_resources": [
 		{
-			"resources": ["icon64.png"],
+			"resources": ["icon128-full.png"],
 			"matches": ["https://www.nytimes.com/*"]
 		}
 	],
 	"icons": {
-		"64": "icon64.png"
+		"16": "icon16.png",
+		"32": "icon32.png",
+		"48": "icon48.png",
+		"128": "icon128.png"
 	}
 }

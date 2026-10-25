@@ -537,6 +537,7 @@ function showReplayMenu() {
 		const fpsSlider = menuDiv.querySelector('#xwd-replay-fps');
 		const fpsValue = menuDiv.querySelector('#xwd-replay-fps-value');
 		const encoderCanvas = menuDiv.querySelector('#xwd-replay-encoder');
+
 		// Abort playback/encoding after menu close
 		const isStopped = () => !menuDiv.isConnected;
 
@@ -591,7 +592,7 @@ function injectReplayButton() {
 
 	const buttonHTML = `
 		<button type="button" id="xwd-replay-button" class="xwd__printtools--button">
-			<img src="${chrome.runtime.getURL('icon64.png')}" alt="" aria-hidden="true" width="20" height="20">
+			<img src="${chrome.runtime.getURL('icon128-full.png')}" alt="" aria-hidden="true" width="20" height="20">
 			<span class="xwd__printtools--text">Replay</span>
 		</button>
 	`;
