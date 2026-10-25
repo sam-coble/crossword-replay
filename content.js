@@ -8,6 +8,7 @@ const VIDEO_KBPS = 5000; // Kibibit per second
 const HOLD_LAST_FRAME_COUNT = 10; // extra frames to hold final grid at end of WebM
 const PERSIST_INTERVAL_MS = 1000; // how often to flush new mutations to storage
 const PUZZLE_RECORD_PREFIX = 'nyt:daily:';
+const STORAGE_BUDGET_BYTES = 5 * 1024 * 1024; // purge oldest records above this (chrome.storage.local limit is 10 MB)
 
 // State
 let mutationTracker = [];
@@ -541,6 +542,7 @@ async function writeRecordToDisk() {
 		[recordKey]: {
 			svg: compressedSvg,
 			mutations,
+			lastUpdatedTimestamp: Date.now(),
 		}
 	});
 }
@@ -599,6 +601,37 @@ function startFlushingMutationsToDisk(intervalMs) {
 	setTimeout(flushMutationsToDisk, intervalMs);
 }
 
+/**
+ * Purges puzzle records in order of lastUpdatedTimestamp (oldest first) until
+ * total storage use is under storageBudgetBytes. Never purges current record.
+ */
+async function purgeOldRecords(storageBudgetBytes) {
+	const METHOD_NAME = 'purgeOldRecords';
+	try {
+		const bytesInUse = await chrome.storage.local.getBytesInUse(null /* keys */);
+		const bytesToRemove = bytesInUse - storageBudgetBytes;
+		if (bytesToRemove <= 0) return;
+
+		const allItems = await chrome.storage.local.get(null /* keys */);
+		const oldestFirst = Object.entries(allItems)
+			.filter(([key, _value]) => key.startsWith(PUZZLE_RECORD_PREFIX) && key !== recordKey)
+			.sort(([_ka, a], [_kb, b]) => (a.lastUpdatedTimestamp ?? 0) - (b.lastUpdatedTimestamp ?? 0));
+
+		const keysToRemove = [];
+		let bytesRemoved = 0;
+		for (const [key, record] of oldestFirst) {
+			if (bytesRemoved >= bytesToRemove) break;
+			keysToRemove.push(key);
+			// Chrome counts each item as key length + JSON length of its value
+			bytesRemoved += key.length + JSON.stringify(record).length;
+		}
+		await chrome.storage.local.remove(keysToRemove);
+		console.debug(EXTENSION_NAME, METHOD_NAME, `[INFO] Purged ${keysToRemove.length} records, ~${((bytesInUse-bytesRemoved)/1024).toFixed(1)} KB in use`);
+	} catch (e) {
+		console.error(EXTENSION_NAME, '[ERROR] failed to purge old records:', e);
+	}
+}
+
 let loadCheckAttempts = 0;
 const MAX_LOAD_CHECK_ATTEMPTS = 1000;
 /**
@@ -623,7 +656,10 @@ const onGridLoad = (_mutationsList, observer) => {
 
 		// Restore saved record for this puzzle, or save the new snapshot
 		// Start recording grid mutations to disk if disk is accessible.
-		loadOrCreateRecord(() => startFlushingMutationsToDisk(PERSIST_INTERVAL_MS) /* onSuccessCallback */);
+		loadOrCreateRecord(() => { /* onSuccessCallback */
+			startFlushingMutationsToDisk(PERSIST_INTERVAL_MS);
+			purgeOldRecords(STORAGE_BUDGET_BYTES);
+		});
 
 		// Inject the replay button
 		injectReplayButton();
