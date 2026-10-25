@@ -1,6 +1,6 @@
 {
 	"name": "NYT Crossword Replay",
-	"version": "0.1",
+	"version": "1.0",
 	"manifest_version": 3,
 	"description": "Record and replay timelapse animations of NYT crossword solves",
 	"author": "coblesam360@gmail.com",
