@@ -675,7 +675,7 @@ async function loadOrCreateRecord(onSuccessCallback) {
 			needToResetStoredSvg = false;
 			// Keep any moves made while the record was loading
 			mutationTracker = storedTuples.map(frame => frame.map(([row, col, value]) => ({ row, col, value }))).concat(mutationTracker);
-			console.debug(EXTENSION_NAME, METHOD_NAME, `[INFO] Loaded ${recordKey} with ${storedTuples.length} moves`);
+			console.debug(EXTENSION_NAME, METHOD_NAME, `[INFO] Loaded ${recordKey} with ${storedTuples.length} moves (on-disk size = ${(record.svg.length + record.mutations.length) / 1024} KB)`);
 		} else {
 			await writeRecordToDisk();
 			hasUnsavedMutations = false;
