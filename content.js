@@ -11,7 +11,7 @@ const PUZZLE_RECORD_PREFIX = 'nyt:daily:';
 const STORAGE_BUDGET_BYTES = 5 * 1024 * 1024; // purge oldest records above this (chrome.storage.local limit is 10 MB)
 
 // State
-let mutationTracker = [];
+let mutationTracker = []; // one entry per replay frame: [[{ row, col, value }, ...], ...]
 let originalGridSvgString = null;
 
 let isMenuOpen = false;
@@ -20,27 +20,66 @@ let recordMutationsToDisk = false;
 let hasUnsavedMutations = false;
 let recordKey = null;
 let compressedSvg = null; // cached so the svg isn't recompressed on every write
+let needToResetStoredSvg = true; // compressedSvg is missing or out of date
 
 /**
- * Observer function to trigger on all updates of xwd grid, find
- * the updated cell, and append the mutation to history tracker.
+ * Helper to read cell current letter(s) from SVG element.
+ */
+function getCellValue(cell) {
+	const letterText = cell.querySelector('text[text-anchor="middle"]');
+	const letterNode = Array.from(letterText?.childNodes ?? []).find(node => node.nodeType === Node.TEXT_NODE);
+	return letterNode?.textContent ?? '';
+}
+
+/**
+ * Helper to capture a cleaned, styled snapshot of grid SVG.
+ */
+function captureGridSnapshot(gridSvgElement) {
+	const rawSvg = gridSvgElement.cloneNode(true /* deepClone */).outerHTML;
+	const styledSvg = getStyledSvg(rawSvg, document.styleSheets, '.xwd__');
+	return cleanSvgForReplay(styledSvg);
+}
+
+/**
+ * Restarts recording from the blank grid after a full grid clear.
+ */
+function resetRecording() {
+	const METHOD_NAME = 'resetRecording';
+	originalGridSvgString = captureGridSnapshot(document.getElementById('xwd-board'));
+	needToResetStoredSvg = true;
+	mutationTracker = [];
+	hasUnsavedMutations = true;
+	console.debug(EXTENSION_NAME, METHOD_NAME, '[INFO] Grid cleared, recording restarted');
+}
+
+/**
+ * Observer function to trigger on all updates of xwd grid, find the
+ * updated cell(s), and append the mutation to history tracker.
  * Should only be triggered on *characterData* update (i.e. not
  * attribute/highlighting change) 
  */
 const onGridUpdate = (mutationsList, observer) => {
-	const targetMutation = mutationsList.filter(mut => mut
-		?.target
-		?.parentElement
-		?.attributes
-		?.['text-anchor']
-		?.nodeValue === 'middle'
-	)[0];
-	if (!targetMutation) return;
+	const changedCells = new Set(mutationsList
+		.map(mut => mut.target.parentElement?.closest('g[aria-rowindex][aria-colindex]'))
+		.filter(Boolean));
+	if (changedCells.size === 0) return;
 
-	const newCellValue = targetMutation?.target?.textContent;
-	const row = +targetMutation?.target?.parentElement?.parentElement?.ariaRowIndex;
-	const col = +targetMutation?.target?.parentElement?.parentElement?.ariaColIndex;
-	mutationTracker.push({ row, col, value: newCellValue });
+	const frame = Array.from(changedCells).map(cell => ({
+		row: +cell.ariaRowIndex,
+		col: +cell.ariaColIndex,
+		value: getCellValue(cell),
+	}));
+
+	// Detect if grid has been cleared (all cells empty). If so, reset recording
+	// If there is word clear (or any other case where multiple cells edited simultaneously 
+	// but grid is not fully empty), track all mutations as happening in single frame.
+	if (frame.every(({ value }) => value === '')
+		&& [...document.querySelectorAll('#xwd-board g[aria-rowindex][aria-colindex]')].every(cell => getCellValue(cell) === '')) {
+		resetRecording();
+		return;
+	}
+
+	mutationTracker.push(frame);
 	hasUnsavedMutations = true;
 
 	if (mutationTracker.length >= MAX_HISTORY_SIZE) {
@@ -188,8 +227,10 @@ function* generateSvgFrames() {
 	}
 	let currentSvg = originalGridSvgString;
 	yield currentSvg;
-	for (const mutation of mutationTracker) {
-		currentSvg = getNextSvg(currentSvg, mutation);
+	for (const frame of mutationTracker) {
+		for (const mutation of frame) {
+			currentSvg = getNextSvg(currentSvg, mutation);
+		}
 		yield currentSvg;
 	}
 }
@@ -535,9 +576,14 @@ async function decodeCompressedString(base64) {
  * Writes the puzzle state (originalGridSvgString, mutationTracker) to disk
  */
 async function writeRecordToDisk() {
-	// Convert from object to array for better compression
-	const mutationTuples = mutationTracker.map(({ row, col, value }) => [row, col, value]);
-	const mutations = await getCompressedString(JSON.stringify(mutationTuples));
+	// Reset the stored svg only after grid clear
+	if (needToResetStoredSvg) {
+		needToResetStoredSvg = false;
+		compressedSvg = await getCompressedString(originalGridSvgString);
+	}
+	// Convert frames of objects to frames of [row, col, value] tuples for better compression
+	const frameTuples = mutationTracker.map(frame => frame.map(({ row, col, value }) => [row, col, value]));
+	const mutations = await getCompressedString(JSON.stringify(frameTuples));
 	await chrome.storage.local.set({
 		[recordKey]: {
 			svg: compressedSvg,
@@ -561,11 +607,11 @@ async function loadOrCreateRecord(onSuccessCallback) {
 			const storedTuples = JSON.parse(await decodeCompressedString(record.mutations));
 			originalGridSvgString = storedSvg;
 			compressedSvg = record.svg;
+			needToResetStoredSvg = false;
 			// Keep any moves made while the record was loading
-			mutationTracker = storedTuples.map(([row, col, value]) => ({ row, col, value })).concat(mutationTracker);
+			mutationTracker = storedTuples.map(frame => frame.map(([row, col, value]) => ({ row, col, value }))).concat(mutationTracker);
 			console.debug(EXTENSION_NAME, METHOD_NAME, `[INFO] Loaded ${recordKey} with ${storedTuples.length} moves`);
 		} else {
-			compressedSvg = await getCompressedString(originalGridSvgString);
 			await writeRecordToDisk();
 			hasUnsavedMutations = false;
 			console.debug(EXTENSION_NAME, METHOD_NAME, `[INFO] Created ${recordKey}`);
@@ -649,9 +695,7 @@ const onGridLoad = (_mutationsList, observer) => {
 
 		// Capture initial grid state
 		if (!originalGridSvgString) {
-			const rawSvg = gridSvgElement.cloneNode(true /* deepClone */).outerHTML;
-			const styledSvg = getStyledSvg(rawSvg, document.styleSheets, '.xwd__');
-			originalGridSvgString = cleanSvgForReplay(styledSvg);
+			originalGridSvgString = captureGridSnapshot(gridSvgElement);
 		}
 
 		// Restore saved record for this puzzle, or save the new snapshot
